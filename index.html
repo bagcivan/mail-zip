@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mail → ZIP</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: "Segoe UI", system-ui, sans-serif;
+      background: #f3f4f6; color: #111827;
+      display: flex; justify-content: center; padding: 40px 16px;
+    }
+    .card {
+      width: 100%; max-width: 640px; background: #fff; border-radius: 12px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.08); padding: 24px;
+    }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .sub { font-size: 13px; color: #6b7280; margin: 0 0 20px; }
+    .field { margin-bottom: 16px; }
+    .field label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+    .field input[type=text] {
+      width: 100%; padding: 9px 12px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px;
+    }
+    .hint { font-size: 12px; color: #9ca3af; margin-top: 4px; }
+    .check { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 16px; }
+    .file-drop {
+      position: relative; display: flex; align-items: center; justify-content: center;
+      border: 2px dashed #d1d5db; border-radius: 10px; padding: 40px 16px;
+      text-align: center; cursor: pointer; transition: .15s;
+    }
+    .file-drop:hover, .file-drop.drag { border-color: #2563eb; background: #f0f7ff; }
+    .file-input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+    #dropLabel { font-size: 14px; color: #6b7280; pointer-events: none; line-height: 1.6; }
+    #list { list-style: none; padding: 0; margin: 20px 0 0; display: flex; flex-direction: column; gap: 8px; }
+    #list li {
+      font-size: 13px; padding: 10px 12px; border-radius: 8px; border: 1px solid #e5e7eb;
+      display: flex; justify-content: space-between; align-items: center; gap: 12px;
+    }
+    #list li .name { word-break: break-all; }
+    #list li .subject { color: #6b7280; font-size: 12px; }
+    #list li.ok { background: #f0fdf4; border-color: #bbf7d0; }
+    #list li.err { background: #fef2f2; border-color: #fecaca; color: #b91c1c; }
+    #list a {
+      white-space: nowrap; text-decoration: none; background: #2563eb; color: #fff;
+      padding: 6px 12px; border-radius: 6px; font-weight: 600;
+    }
+    .spinner {
+      display: inline-block; width: 14px; height: 14px; border: 2px solid #93c5fd;
+      border-top-color: #2563eb; border-radius: 50%; animation: spin .7s linear infinite;
+      vertical-align: -2px; margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Mail → ZIP</h1>
+    <p class="sub">Outlook'tan maili (.msg) sürükleyip bırakın; mail ve ekleri tek bir ZIP olarak indirilir.<br>Dosyalar hiçbir sunucuya gönderilmez, her şey tarayıcınızda işlenir.</p>
+
+    <div class="field">
+      <label for="zipName">ZIP adı (isteğe bağlı)</label>
+      <input type="text" id="zipName" placeholder="Boş bırakılırsa mail dosyasının adı kullanılır" />
+      <div class="hint">Birden fazla mail bırakılırsa sonlarına _2, _3... eklenir.</div>
+    </div>
+
+    <label class="check">
+      <input type="checkbox" id="autoDownload" checked />
+      Dönüştürünce otomatik indir
+    </label>
+
+    <label class="file-drop" id="fileDrop">
+      <input type="file" id="fileInput" class="file-input" accept=".msg" multiple />
+      <span id="dropLabel">Mail(leri) buraya sürükle bırak<br>veya tıklayıp seç</span>
+    </label>
+
+    <ul id="list"></ul>
+  </div>
+
+  <script type="module">
+    import { msgToZip } from './converter.js';
+
+    const drop = document.getElementById('fileDrop');
+    const input = document.getElementById('fileInput');
+    const list = document.getElementById('list');
+
+    ['dragenter', 'dragover'].forEach(e => drop.addEventListener(e, () => drop.classList.add('drag')));
+    ['dragleave', 'drop'].forEach(e => drop.addEventListener(e, () => drop.classList.remove('drag')));
+
+    input.addEventListener('change', () => {
+      const files = [...input.files];
+      input.value = '';
+      files.forEach((f, i) => convert(f, i, files.length));
+    });
+
+    function zipNameFor(i, total) {
+      let base = document.getElementById('zipName').value.trim().replace(/\.zip$/i, '');
+      if (!base) return '';
+      return (total > 1 && i > 0 ? `${base}_${i + 1}` : base) + '.zip';
+    }
+
+    function esc(s) {
+      return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    async function convert(file, i, total) {
+      const li = document.createElement('li');
+      li.innerHTML = `<span><span class="spinner"></span>${esc(file.name)}</span>`;
+      list.prepend(li);
+
+      if (!file.name.toLowerCase().endsWith('.msg')) {
+        li.className = 'err';
+        li.textContent = `❌ ${file.name}: yalnızca .msg dosyaları desteklenir`;
+        return;
+      }
+
+      try {
+        const msgBytes = new Uint8Array(await file.arrayBuffer());
+        const { zipBytes, zipName, subject } = msgToZip(msgBytes, file.name, zipNameFor(i, total));
+        const url = URL.createObjectURL(new Blob([zipBytes], { type: 'application/zip' }));
+
+        li.className = 'ok';
+        li.innerHTML = `
+          <span>
+            <div class="name">✅ ${esc(zipName)} <span class="subject">(${(zipBytes.length / 1024).toFixed(0)} KB)</span></div>
+            ${subject ? `<div class="subject">${esc(subject)}</div>` : ''}
+          </span>
+          <a href="${url}" download="${esc(zipName)}">⬇ İndir</a>`;
+
+        if (document.getElementById('autoDownload').checked) li.querySelector('a').click();
+      } catch (err) {
+        li.className = 'err';
+        li.textContent = `❌ ${file.name}: ${err.message}`;
+      }
+    }
+  </script>
+</body>
+</html>
